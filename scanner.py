@@ -3,6 +3,8 @@
 import json
 import requests
 from requests.structures import CaseInsensitiveDict
+from bs4 import BeautifulSoup
+from colorama import init
 
 # -------------------------Настройки-------------------------
 MCC = ""  # Введите здесь MCC вашей страны. Для Беларуси: 257
@@ -14,6 +16,7 @@ CID_end = ""  # Введите здесь конечный Cell ID для пои
 RNC = ""  # Введите здесь RNC. Только для 3G!!!
 API_key = ""  # Ваш ключ API, получить бесплатно здесь: https://yandex.ru/dev/locator/keys/get/ (после входа в аккаунт введите абсолютно любой домен)
 not_found = False  # Если True - информация о том, что БС не найдена будет выводиться в консоль
+bnm_search = True  # Если True - поиск соты будет осуществляться и в БД BELNETMON (только для Беларуси)
 # -----------------------------------------------------------
 
 class CustomError(Exception):
@@ -39,10 +42,49 @@ def save_kml():
     kml.close()
 
 
+def bnm_query(cid):
+    if network == '4G':
+        operator = "4"
+        cid = cid[1:]
+    else:
+        if MNC == '1':
+            operator = 'V'
+        elif MNC == '2':
+            operator = 'M'
+        elif MNC == '4':
+            operator = 'B'
+        else:
+            raise CustomError('Неизвестный оператор')
+    url = 'http://belnetmon.bn.by/query4.php?OPR_%s=on&CITY=&ADDR=&REM=&CB=&LAC=%s&CID1=%s&CID2=&STAT_R=on&STAT_S=on&OUT=' % (
+    operator, LAC, cid)
+    response = requests.get(url)
+    response.encoding = 'windows-1251'
+    soup = BeautifulSoup(response.text, 'lxml')
+    return soup
+
+
+def check_sectors(soup, cid, sector):
+    is_found = soup.find('table').findNextSibling(text=True)
+    sect_str = ''
+    if str(is_found).split('(')[0][18:] != '0':
+        cid_result = soup.find_all('td', text=cid)
+        for cid in cid_result:
+            sectors = cid.findNextSibling().text.strip()
+            sect_str += sectors
+        if sector in list((x := sect_str.split(":"))[0]) + x[1:]:
+            return '| \033[2;32mесть в базе \033[0;0mBELNETMON'
+    return '| \033[2;31mнет в базе \033[0;0mBELNETMON'
+
+
 def parse_cycle(cid_start, cid_end, sector_start, sector_end):
     current_cid = -1
     for CID in range(cid_start, cid_end + 1):
+        if bnm_search is True and MCC == '257':
+            soap = bnm_query(str(CID))
         for sector in range(sector_start, sector_end + 1):
+            is_found = ''
+            if bnm_search is True and MCC == '257':
+                is_found = check_sectors(soap, str(CID), str(sector))
             if network == "2G":
                 x, y = get_coordinates(str(CID) + str(sector))
             elif network == "3G":
@@ -54,13 +96,13 @@ def parse_cycle(cid_start, cid_end, sector_start, sector_end):
             else:
                 raise CustomError("Введено неверное поколение сети")
             if x is not None and y is not None:
-                print("CID %i.%i found (%s, %s)" % (CID, sector, x, y))
+                print("CID %i.%i found (%s, %s) %s" % (CID, sector, x, y, is_found))
                 if current_cid != CID:
                     create_folder(CID)
                     current_cid = CID
                 write_coordinates(CID, sector, x, y)
             elif not_found is True:
-                print("CID %i.%i not found" % (CID, sector))
+                print("CID %i.%i not found %s" % (CID, sector, is_found))
 
 
 def get_coordinates(cid):
@@ -94,8 +136,10 @@ def get_coordinates(cid):
 
 def main():
     create_kml()
+    init()
     print("Сканирование начато:")
-    parse_cycle(int(CID_start.split(".")[0]), int(CID_end.split(".")[0]), int(CID_start.split(".")[1]), int(CID_end.split(".")[1]))
+    parse_cycle(int(CID_start.split(".")[0]), int(CID_end.split(".")[0]), int(CID_start.split(".")[1]),
+                int(CID_end.split(".")[1]))
     print("Сканирование окончено")
     save_kml()
 
